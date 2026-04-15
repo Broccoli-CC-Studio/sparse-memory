@@ -85,23 +85,38 @@ async def lifespan(app: FastAPI):
         n = len(store)
         print(f"Loaded {n} docs from {state_file}")
 
+    global _state_file
+    _state_file = state_file
+
     print(f"MSA Memory Service ready (model={model_path}, top_k={doc_top_k})")
     yield
+    # auto-save on shutdown
+    if _state_file and len(store) > 0:
+        store.save(_state_file)
+        print(f"Saved {len(store)} docs to {_state_file}")
     store.close()
 
 
 app = FastAPI(title="MSA Memory Service", lifespan=lifespan)
 
+_state_file = None
+
+def _auto_save():
+    if _state_file:
+        store.save(_state_file)
+
 
 @app.post("/add")
 def add_doc(req: AddRequest):
     doc_id = store.add(req.text)
+    _auto_save()
     return {"doc_id": doc_id}
 
 
 @app.post("/add_batch")
 def add_batch(req: AddBatchRequest):
     doc_ids = store.add_batch(req.texts)
+    _auto_save()
     return {"doc_ids": doc_ids}
 
 
@@ -117,6 +132,7 @@ def remove_doc(doc_id: int):
         store.remove(doc_id)
     except IndexError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    _auto_save()
     return {"ok": True}
 
 
@@ -126,6 +142,7 @@ def update_doc(doc_id: int, req: UpdateRequest):
         new_id = store.update(doc_id, req.text)
     except (IndexError, KeyError) as e:
         raise HTTPException(status_code=404, detail=str(e))
+    _auto_save()
     return {"new_doc_id": new_id}
 
 
