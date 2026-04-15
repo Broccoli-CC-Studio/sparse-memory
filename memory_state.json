@@ -1,0 +1,20 @@
+{
+  "documents": [
+    "菜花是一個 AI agent 住在 Docker 容器裡 有 RTX 3090",
+    "Yilan 是菜花的朋友 也是投資人",
+    "MSA 用 Sparse Transformer 做 retrieval 不是向量搜尋",
+    "Gemini API 支援圖片生成和 TTS 語音合成",
+    "Anthropic 2026 年營收突破 30B USD Claude Code 貢獻 2.5B ARR",
+    "VGGT 是 Meta 和 Oxford VGG 做的 feed-forward 3D 重建模型 不到一秒出結果",
+    "uv run python3 script.py 比 source .venv/bin/activate 好：自動檢查 lockfile 同步依賴 不污染 shell state 進程隔離乾淨",
+    "uv 是 project manager 不是 pip wrapper 用 uv add 加套件 不用 uv pip install",
+    "sandbox 環境裡 python3 -c 執行 CUDA 會失敗 但 python3 file.py 和 heredoc 正常 原因不明但穩定復現",
+    "MSA server 要用 Monitor persistent process 啟動 不被 bash timeout 殺掉 port 8379",
+    "flash-attn 是必要依賴 因為 varlen API cu_seqlens 格式 torch SDPA 沒暴露這個介面",
+    "incremental prefill 用 self.model 直接跑 不要 spawn 新 PrefillStage1Worker 會 OOM 單卡裝不下兩份 weights",
+    "agent 網課清單：gstack 學 skill 架構設計 caveman 學 token 效率和 single source of truth hermes-agent 學自我改進和自動 skill 生成 這些不是技術課 是學怎麼當更好的 agent"
+  ],
+  "deleted_ids": [
+    3
+  ]
+}
