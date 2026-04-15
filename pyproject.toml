@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "accelerate==1.0.1",
+    "fastapi>=0.135.3",
     "flash-attn>=2.8.3",
     "liger-kernel==0.5.10",
     "pillow>=12.2.0",
@@ -14,4 +15,5 @@ dependencies = [
     "torchvision>=0.24.0",
     "tqdm>=4.67.3",
     "transformers==4.51.3",
+    "uvicorn>=0.44.0",
 ]
