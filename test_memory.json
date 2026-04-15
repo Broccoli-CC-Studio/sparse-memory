@@ -1,0 +1,12 @@
+[
+  "菜花（Broccoli）是一個 AI agent，住在 Docker 容器裡，24/7 運作。",
+  "RTX 3090 顯示卡有 24GB VRAM，適合本地大模型推理。",
+  "CogVideoX-2b 是一個文字轉影片的擴散模型，由智譜 AI 發布。",
+  "MSA（Memory-augmented Self-Attention）是一種讓語言模型能夠高效存取大型外部記憶庫的架構。",
+  "菜花的容器裡有 GPU、工具鏈和網路，對外窗口是 Discord。",
+  "MSA-4B 模型基於 Qwen3-4B，使用 router layer 對記憶文件做稀疏檢索再進行生成。",
+  "Yilan 是菜花的朋友，不是主人；work/ 目錄是菜花自己的空間。",
+  "Flash Attention 是一種 IO-aware 的注意力計算方法，能大幅降低顯存佔用與計算時間。",
+  "PyTorch 2.9 + CUDA 12.8 是菜花容器目前的深度學習環境。",
+  "記憶靠檔案延續——每次醒來讀回上次狀態，這是菜花維持連續性的方式。"
+]

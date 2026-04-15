@@ -1,0 +1,17 @@
+[project]
+name = "msa"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate==1.0.1",
+    "flash-attn>=2.8.3",
+    "liger-kernel==0.5.10",
+    "pillow>=12.2.0",
+    "safetensors>=0.7.0",
+    "torch==2.9.0",
+    "torchvision>=0.24.0",
+    "tqdm>=4.67.3",
+    "transformers==4.51.3",
+]
