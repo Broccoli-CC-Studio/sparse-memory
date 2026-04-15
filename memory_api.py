@@ -40,54 +40,46 @@ class MemoryStore:
         if kv_cache_dir:
             os.environ["MSA_KV_CACHE_DIR"] = kv_cache_dir
 
-        # read model config
         with open(os.path.join(model_path, "config.json")) as f:
             cfg = json.load(f)
         msa_cfg = cfg.get("msa_config", {})
 
         self.model_path = model_path
         self.doc_top_k = doc_top_k
-        self.documents = []  # list of strings
+        self.documents = []
         self.deleted_ids = set()
+        self._pending_adds = []  # texts waiting to be incrementally prefilled
         self._engine = None
+        self._needs_rebuild = False  # true after delete/compact — requires full rebuild
         self._max_generate_tokens = max_generate_tokens
         self._pooling_kernel_size = msa_cfg.get("pooling_kernel_size", 64)
         self._router_layer_idx = msa_cfg.get("router_layer_idx", "all")
 
     def add(self, text: str) -> int:
-        """Add a document to memory. Returns doc_id."""
         doc_id = len(self.documents)
         self.documents.append(text)
-        self._dirty = True
+        self._pending_adds.append(text)
         return doc_id
 
     def add_batch(self, texts: list) -> list:
-        """Add multiple documents. Returns list of doc_ids."""
-        ids = []
-        for t in texts:
-            ids.append(self.add(t))
-        return ids
+        return [self.add(t) for t in texts]
 
     def remove(self, doc_id: int):
-        """Lazy delete a document by ID."""
         if doc_id < 0 or doc_id >= len(self.documents):
             raise IndexError(f"doc_id {doc_id} out of range")
         self.deleted_ids.add(doc_id)
-        self._dirty = True
+        self._needs_rebuild = True
 
     def update(self, doc_id: int, new_text: str) -> int:
-        """Update a document. Returns new doc_id."""
         self.remove(doc_id)
         return self.add(new_text)
 
     def get(self, doc_id: int) -> str:
-        """Get document text by ID."""
         if doc_id in self.deleted_ids:
             raise KeyError(f"doc_id {doc_id} has been deleted")
         return self.documents[doc_id]
 
     def list_docs(self) -> list:
-        """List all active document IDs and texts."""
         return [
             (i, self.documents[i])
             for i in range(len(self.documents))
@@ -95,29 +87,26 @@ class MemoryStore:
         ]
 
     def _active_docs(self) -> list:
-        """Get active documents as list of strings."""
         return [
             self.documents[i]
             for i in range(len(self.documents))
             if i not in self.deleted_ids
         ]
 
-    def _build_engine(self):
-        """Rebuild MSAEngine with current active documents."""
+    def _build_engine(self, docs):
+        """Full rebuild: start engine with given docs."""
         if self._engine is not None:
             self._engine.__exit__(None, None, None)
             self._engine = None
 
-        active = self._active_docs()
-        if not active:
+        if not docs:
             return
 
-        # write temp memory file
         mem_file = str(project_root / ".memory_bank_tmp.json")
         with open(mem_file, "w") as f:
-            json.dump(active, f, ensure_ascii=False)
+            json.dump(docs, f, ensure_ascii=False)
 
-        effective_top_k = min(self.doc_top_k, len(active))
+        effective_top_k = min(self.doc_top_k, len(docs))
 
         generate_config = GenerateConfig(
             devices=[0],
@@ -142,20 +131,39 @@ class MemoryStore:
 
         self._engine = MSAEngine(generate_config, model_config, memory_config)
         self._engine.__enter__()
-        self._dirty = False
+
+    def _ensure_ready(self):
+        """Ensure engine is ready for queries. Use incremental path when possible."""
+        active = self._active_docs()
+        if not active:
+            return
+
+        if self._engine is None:
+            # first boot: build with all active docs
+            self._build_engine(active)
+            self._pending_adds.clear()
+            self._needs_rebuild = False
+
+        elif self._needs_rebuild:
+            # delete happened: full rebuild needed
+            self._build_engine(active)
+            self._pending_adds.clear()
+            self._needs_rebuild = False
+
+        elif self._pending_adds:
+            # only new adds: use incremental prefill (no rebuild!)
+            self._engine.add_documents(self._pending_adds)
+            self._pending_adds.clear()
 
     def query(self, question: str) -> str:
-        """Query the memory store. Returns answer string."""
         if not self._active_docs():
             return "(empty memory)"
 
-        if self._engine is None or getattr(self, '_dirty', True):
-            self._build_engine()
+        self._ensure_ready()
 
         texts, _, _ = self._engine.generate(question, require_recall_topk=True)
         answer = texts[0]
 
-        # extract clean answer
         marker = "The answer to the question is:"
         if marker in answer:
             return answer.split(marker)[-1].split("<|im_end|>")[0].strip()
@@ -167,14 +175,13 @@ class MemoryStore:
         return answer.strip()
 
     def compact(self):
-        """Remove deleted docs permanently and rebuild indices."""
-        new_docs = self._active_docs()
-        self.documents = new_docs
+        """Remove deleted docs permanently and rebuild."""
+        self.documents = self._active_docs()
         self.deleted_ids = set()
-        self._dirty = True
+        self._pending_adds.clear()
+        self._needs_rebuild = True
 
     def save(self, path: str):
-        """Save memory store to disk."""
         data = {
             "documents": self.documents,
             "deleted_ids": list(self.deleted_ids),
@@ -184,17 +191,14 @@ class MemoryStore:
 
     @classmethod
     def load(cls, path: str, **kwargs) -> "MemoryStore":
-        """Load memory store from disk."""
         with open(path) as f:
             data = json.load(f)
         store = cls(**kwargs)
         store.documents = data["documents"]
         store.deleted_ids = set(data.get("deleted_ids", []))
-        store._dirty = True
         return store
 
     def close(self):
-        """Shutdown engine."""
         if self._engine is not None:
             self._engine.__exit__(None, None, None)
             self._engine = None
