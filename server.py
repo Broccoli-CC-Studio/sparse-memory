@@ -20,9 +20,11 @@ Endpoints:
     GET    /health                                  → {"status": "ok", "docs": 3, "gpu_mb": 9482}
 """
 
+import multiprocessing as mp
+mp.set_start_method("spawn", force=True)
+
 import os
 import sys
-import multiprocessing as mp
 
 os.environ.setdefault("MASTER_PORT", "29512")
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
@@ -127,7 +129,7 @@ def update_doc(doc_id: int, req: UpdateRequest):
     return {"new_doc_id": new_id}
 
 
-@app.get("/docs")
+@app.get("/list")
 def list_docs():
     docs = store.list_docs()
     return {"docs": docs, "count": len(docs)}
@@ -182,6 +184,5 @@ def health():
 
 
 if __name__ == "__main__":
-    mp.set_start_method("spawn")
     port = int(os.environ.get("MSA_PORT", "8377"))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
