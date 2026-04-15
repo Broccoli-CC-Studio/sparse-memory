@@ -1,7 +1,7 @@
 """Test incremental prefill — add documents without restarting engine"""
 import multiprocessing as mp
 import os
-os.environ["MASTER_PORT"] = "29507"
+os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "29510")
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import sys
