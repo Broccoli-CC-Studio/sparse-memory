@@ -622,12 +622,105 @@ class Memory(GpuWorker):
         print(f"GPU {self.gpu_id} memory usage: {format_bytes(kv_bytes)} kv shape {kv_shape}")
         return kv_bytes, kv_shape
 
+    def _prefill_template_vars(self):
+        """
+        计算 prefill 用的 template head tokens，与 PrefillStage1Worker._prepare_template 等价。
+        结果缓存在 self._prefill_tmpl，避免重复 tokenize。
+        """
+        if hasattr(self, '_prefill_tmpl'):
+            return self._prefill_tmpl
+
+        pad_token = self.tokenizer.pad_token
+        pad_token_id = self.tokenizer.pad_token_id
+        prompt_template = self.generate_config.template["prompt"].replace("{prompt}", pad_token)
+        prompt_template_inputs = self.tokenizer(prompt_template, add_special_tokens=False)
+        prompt_template_input_ids = prompt_template_inputs["input_ids"]
+        prompt_template_attention_mask = prompt_template_inputs["attention_mask"]
+        pad_index = prompt_template_input_ids.index(pad_token_id)
+
+        self._prefill_tmpl = {
+            "pad_index": pad_index,
+            "template_head_input_ids": prompt_template_input_ids[:pad_index],
+            "template_head_attention_mask": prompt_template_attention_mask[:pad_index],
+        }
+        return self._prefill_tmpl
+
+    def _prefill_block_direct(self, block: List[Document]) -> Dict:
+        """
+        用 self.model 直接 prefill 一批文档，不启动子进程。
+        等价于 PrefillStage1Worker.inference，但在当前进程内执行。
+        """
+        tmpl = self._prefill_template_vars()
+        pad_index = tmpl["pad_index"]
+        template_head_input_ids = tmpl["template_head_input_ids"]
+        template_head_attention_mask = tmpl["template_head_attention_mask"]
+        pooling_kernel_size = self.memory_config.pooling_kernel_size
+        template_id = -2
+
+        # --- 构造输入（与 _prepare_block_inputs 等价）---
+        doc_ids = [template_id] * len(template_head_input_ids)
+        doc_input_ids = list(template_head_input_ids)
+        doc_attention_mask = list(template_head_attention_mask)
+        position_ids = list(range(pad_index))
+        chunk_sizes = []
+
+        for doc_idx, item in enumerate(block):
+            doc_id, doc, pre_calculated_num_chunk = item.doc_id, item.doc, item.num_chunks
+            _, doc_inputs = compose_input(doc, doc_id, self.tokenizer)
+            length = len(doc_inputs["input_ids"])
+            temp_doc_ids = [doc_idx + 1] * length
+            temp_position_ids = list(range(length))
+            chunk_size = (length + pooling_kernel_size - 1) // pooling_kernel_size
+            assert chunk_size == pre_calculated_num_chunk, (
+                f"pre calculated chunk {pre_calculated_num_chunk} got {chunk_size}, "
+                f"doc str {len(doc)} id len {length}: [{doc_id}] <{doc}>"
+            )
+            chunk_sizes.append(chunk_size)
+            doc_ids.extend(temp_doc_ids)
+            doc_input_ids.extend(doc_inputs["input_ids"])
+            doc_attention_mask.extend(doc_inputs["attention_mask"])
+            position_ids.extend(temp_position_ids)
+
+        input_ids_tensor = torch.LongTensor([doc_input_ids]).to(self.device)
+        attention_mask_tensor = torch.LongTensor([doc_attention_mask]).to(self.device)
+        doc_ids_tensor = torch.LongTensor([doc_ids]).to(self.device)
+        position_ids_tensor = torch.LongTensor([position_ids]).to(self.device)
+
+        # --- forward pass（与 _inference 等价）---
+        past_key_values = CustomDynamicCacheOnCPU()
+        for layer_idx in range(self.num_model_layers()):
+            past_key_values.record_kwargs(layer_idx, {"stage": "prefill_stage1"})
+
+        with torch.no_grad():
+            outputs = self.model.model(
+                input_ids=input_ids_tensor,
+                attention_mask=attention_mask_tensor,
+                position_ids=position_ids_tensor,
+                past_key_values=past_key_values,
+                use_cache=True,
+                output_attentions=False,
+                output_hidden_states=False,
+                output_docs_score=False,
+                doc_ids=doc_ids_tensor,
+            )
+
+        torch.cuda.empty_cache()
+
+        kv_meta = {
+            "chunk_sizes": chunk_sizes,
+            "past_key_values": outputs.past_key_values,
+            "nr_docs": len(block),
+            "doc_ids": [item.doc_id for item in block],
+            "nr_chunks": [item.num_chunks for item in block],
+        }
+        return kv_meta
+
     def add_documents_incremental(self, new_docs: List[Document]) -> List[int]:
         """
         增量 prefill 新文档并追加 KV 到现有 tensors。
 
         流程：
-        1. 启动一个临时 PrefillStage1Worker，prefill 新文档
+        1. 用 self.model 直接 prefill 新文档（不启动子进程，避免重复载入模型导致 OOM）
         2. 将新 KV 在 dim[2] 追加到现有 block_data.k/v/rk
         3. 更新 block_desc（docs, doc_ids, pool_ids, offsets, lens）
         4. 调用 _post_process 重建 slices 和 k_slices
@@ -641,10 +734,7 @@ class Memory(GpuWorker):
         if not new_docs:
             return []
 
-        self._start_worker()
-        PrefillStage1Worker.send_documents(self._worker_req_q, new_docs)
-
-        # 收集新文档产生的 KV chunks
+        # 收集新文档产生的 KV chunks（直接在当前进程用 self.model 推理）
         new_kv_per_layer: Dict[int, List[torch.Tensor]] = {layer: [] for layer in self.router_layer_ids}
         new_kv_v_per_layer: Dict[int, List[torch.Tensor]] = {layer: [] for layer in self.router_layer_ids}
         new_kv_rk_per_layer: Dict[int, List[torch.Tensor]] = {layer: [] for layer in self.router_layer_ids}
@@ -654,8 +744,8 @@ class Memory(GpuWorker):
         recv = 0
         pbar = tqdm(total=total_new_docs, desc=f"Worker-{self.gpu_id} incremental prefill", position=self.gpu_id)
 
-        while recv < total_new_docs:
-            meta = PrefillStage1Worker.recv_meta(self._worker_rsp_q)
+        for block in PrefillStage1Worker.split_docs(new_docs, self.memory_config.block_size):
+            meta = self._prefill_block_direct(block)
             recv += meta['nr_docs']
             pbar.update(meta['nr_docs'])
 
@@ -676,7 +766,6 @@ class Memory(GpuWorker):
             past_key_values.clear_kvcache()
 
         pbar.close()
-        self._stop_worker()
 
         # --- 1. 合并新 pool_ids（局部 id，从1起始，每批独立）---
         # cumulative_concat 使得跨批次的 pool_ids 连续递增
