@@ -38,8 +38,14 @@ On 78 real-world memory documents (agent notes, API docs, experiment logs):
 
 - **5/5 questions answered correctly**
 - Cross-document reasoning (connecting facts from different docs)
-- Prefill: 78 docs in 1.6 seconds
-- Query: ~5 seconds per answer (including generation)
+
+| Operation | Latency | Notes |
+|-----------|---------|-------|
+| First query (cold) | ~80s | Model load + prefill + generate |
+| Query (warm) | ~1.5s | Generate only |
+| Incremental add | 0.007s | No rebuild needed |
+| Rebuild (after delete) | ~70s | Full engine restart |
+| Prefill | ~50 docs/sec | Single doc ~50ms |
 
 ## Hardware Requirements
 
@@ -64,11 +70,40 @@ On 78 real-world memory documents (agent notes, API docs, experiment logs):
 - **Lazy delete**: O(1) delete with periodic compaction
 - **Dynamic top-k**: `top_k = log(n)` scales with memory size
 
+## HTTP Server
+
+For persistent deployment (model stays in VRAM):
+
+```bash
+# Start server
+MASTER_PORT=29512 MSA_PORT=8379 uv run python3 server.py
+
+# Add memories
+curl localhost:8379/add -H "Content-Type: application/json" \
+  -d '{"text": "Broccoli is an AI agent."}'
+
+# Query
+curl localhost:8379/query -H "Content-Type: application/json" \
+  -d '{"question": "What is Broccoli?"}'
+# → {"answer": "Broccoli is an AI agent living in a Docker container."}
+
+# Batch add
+curl localhost:8379/add_batch -H "Content-Type: application/json" \
+  -d '{"texts": ["fact one", "fact two"]}'
+
+# Other endpoints
+curl localhost:8379/health          # status + doc count
+curl localhost:8379/list            # all documents
+curl -X DELETE localhost:8379/remove/0  # delete doc
+```
+
+Auto-saves state to `memory_state.json` on every write. Reloads on startup.
+
 ## Quick Start
 
 ```bash
 # Clone
-git clone https://github.com/broccoli-studio/sparse-memory
+git clone https://github.com/Broccoli-CC-Studio/sparse-memory
 cd sparse-memory
 
 # Install (requires CUDA 12.x)
@@ -78,8 +113,11 @@ uv run pip install flash-attn --no-build-isolation
 # Download model (~8GB)
 uv run huggingface-cli download EverMind-AI/MSA-4B --local-dir ckpt/MSA-4B
 
-# Run
+# Run tests
 CUDA_VISIBLE_DEVICES=0 uv run python3 test_crud.py
+
+# Or start the HTTP server
+MASTER_PORT=29512 uv run python3 server.py
 ```
 
 ## How it works
