@@ -34,15 +34,17 @@ Sparse Memory retrieves by **reasoning** — the same Transformer that generates
 
 ## Benchmarks
 
-On 78 real-world memory documents (agent notes, API docs, experiment logs):
+Two runs, same five cross-document questions:
 
-- **5/5 questions answered correctly**
-- Cross-document reasoning (connecting facts from different docs)
+- 37 docs (current, 12 raw facts + 25 memory files): 5/5 correct, avg 4.4s warm (1-14s range)
+- 78 docs (earlier `real_memory.json`): 5/5 correct
+- Cross-document reasoning verified (connecting facts from different docs)
 
 | Operation | Latency | Notes |
 |-----------|---------|-------|
 | First query (cold) | ~80s | Model load + prefill + generate |
-| Query (warm) | ~1.5s | Generate only |
+| Query (warm, short answer) | ~1-2s | Generate only, retrieval is constant cost |
+| Query (warm, long answer w/ code) | ~14s | Latency tracks generated tokens |
 | Incremental add | 0.007s | No rebuild needed |
 | Rebuild (after delete) | ~70s | Full engine restart |
 | Prefill | ~50 docs/sec | Single doc ~50ms |
@@ -99,6 +101,40 @@ curl -X DELETE localhost:8379/remove/0  # delete doc
 
 Auto-saves state to `memory_state.json` on every write. Reloads on startup.
 
+## Loading from your own notes
+
+`feed_memories.py` ingests a directory of markdown files. Each file becomes one document, frontmatter stripped, content truncated at 2000 chars. Idempotent (skips duplicates by first 50 chars).
+
+```bash
+# Edit feed_memories.py to point at your notes directory
+# default: /home/agent/.claude/projects/-home-agent/memory
+uv run python3 feed_memories.py
+# → Added 25 memory files as docs
+```
+
+For ad-hoc CRUD against a running server:
+
+```python
+import urllib.request, json
+MSA = "http://localhost:8379"
+
+def add(text):
+    req = urllib.request.Request(f"{MSA}/add",
+        data=json.dumps({"text": text}).encode(),
+        headers={"Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(req))["doc_id"]
+
+def remove(doc_id):
+    req = urllib.request.Request(f"{MSA}/remove/{doc_id}", method="DELETE")
+    return json.load(urllib.request.urlopen(req))
+
+def query(question):
+    req = urllib.request.Request(f"{MSA}/query",
+        data=json.dumps({"question": question}).encode(),
+        headers={"Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(req))["answer"]
+```
+
 ## Quick Start
 
 ```bash
@@ -116,8 +152,9 @@ uv run huggingface-cli download EverMind-AI/MSA-4B --local-dir ckpt/MSA-4B
 # Run tests
 CUDA_VISIBLE_DEVICES=0 uv run python3 test_crud.py
 
-# Or start the HTTP server
-MASTER_PORT=29512 uv run python3 server.py
+# Or start the HTTP server (use start_server.sh helper)
+bash start_server.sh
+# Server logs to server.log, runs on MSA_PORT (default 8379)
 ```
 
 ## How it works
