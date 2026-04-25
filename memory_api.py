@@ -139,14 +139,14 @@ class MemoryStore:
             return
 
         if self._engine is None:
-            # first boot: build with all active docs
+            # first boot: build with all active docs (loads checkpoint)
             self._build_engine(active)
             self._pending_adds.clear()
             self._needs_rebuild = False
 
         elif self._needs_rebuild:
-            # delete happened: full rebuild needed
-            self._build_engine(active)
+            # delete happened: in-place reset, reuse loaded model (no checkpoint reload)
+            self._engine.reset_documents(active)
             self._pending_adds.clear()
             self._needs_rebuild = False
 

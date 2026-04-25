@@ -104,6 +104,22 @@ class AddDocumentsResult(ResultBase):
     def __post_init__(self):
         self.name = "add_documents"
 
+@dataclass
+class ResetMemoryCmd(CmdBase):
+    docs: List = None  # List[Document] assigned to this worker (this GPU's bucket)
+    idx_to_doc: Dict = None  # full {doc_id: text} mapping
+
+    def __post_init__(self):
+        self.name = "reset_memory"
+
+@dataclass
+class ResetMemoryResult(ResultBase):
+    ok: bool = False
+    error: str = None
+
+    def __post_init__(self):
+        self.name = "reset_memory"
+
 class CustomDynamicCacheOnCPU(CustomDynamicCache):
     def __init__(self, _distributed_cache_data=None):
         super().__init__(_distributed_cache_data)
@@ -621,6 +637,22 @@ class Memory(GpuWorker):
 
         print(f"GPU {self.gpu_id} memory usage: {format_bytes(kv_bytes)} kv shape {kv_shape}")
         return kv_bytes, kv_shape
+
+    def reset_memory(self):
+        """Free per-document memory bank state without reloading the model.
+
+        Drops blocks (per-layer KV tensors, the bulk of GPU/CPU memory), block
+        descriptors, slice cache, and idx_to_doc. Keeps loaded model weights
+        and template_prefix_kvcache (doc-independent). Caller must repopulate
+        via generate_blocks(...) before serving queries again.
+        """
+        self.blocks = {layer: BlockData() for layer in self.router_layer_ids}
+        self.block_desc = BlockDesc()
+        self.k_slices = {}
+        self.slice_desc = []
+        if hasattr(self, 'idx_to_doc'):
+            self.idx_to_doc = {}
+        torch.cuda.empty_cache()
 
     def _prefill_template_vars(self):
         """
@@ -1877,6 +1909,26 @@ class MSAEngine:
                     torch.cuda.empty_cache()
                     response_queue.put(AddDocumentsResult(gpu_id=gpu_id, doc_ids=new_doc_ids), block=False)
 
+                elif cmd.name == "reset_memory":
+                    # P1.1 rebuild optimization: reset memory bank without checkpoint reload.
+                    cmd: ResetMemoryCmd = cmd
+                    try:
+                        service.reset_memory()
+                        if cmd.docs:
+                            if cmd.idx_to_doc is not None:
+                                service.save_idx_to_doc(cmd.idx_to_doc)
+                            service.generate_blocks(cmd.docs)
+                            torch.cuda.empty_cache()
+                        response_queue.put(
+                            ResetMemoryResult(gpu_id=gpu_id, ok=True),
+                            block=False,
+                        )
+                    except Exception as ex:
+                        response_queue.put(
+                            ResetMemoryResult(gpu_id=gpu_id, ok=False, error=str(ex)),
+                            block=False,
+                        )
+
                 else:
                     print(f"GPU_ID {gpu_id} recv unknown cmd {cmd.name}")
 
@@ -1949,6 +2001,59 @@ class MSAEngine:
 
         # 返回与 texts 顺序一致的 doc_id 列表
         return [doc.doc_id for doc in new_documents]
+
+    def reset_documents(self, new_texts: List[str]) -> None:
+        """Replace the entire memory bank with new_texts. Reuses the loaded
+        model on each worker (no checkpoint reload), so wall time is bounded
+        by the prefill cost on the new doc set rather than the ~70s engine
+        re-spawn path.
+
+        流程：
+        1. Tokenize new_texts，重新分桶（mirrors _sort_reference）
+        2. 向各 worker 发送 ResetMemoryCmd 携带各自 bucket + 全局 idx_to_doc
+        3. 等待 ack，更新 MSAEngine 侧 self.docs / self.buckets
+
+        Args:
+            new_texts: 完整的新文档文本列表（替换当前 memory bank）
+
+        Raises:
+            RuntimeError: 任一 worker 报告 reset 失败
+        """
+        # --- 1. Tokenize 并重新分桶 ---
+        kernel_sz = self.model_config.pooling_kernel_size
+        new_documents: List[Document] = []
+        for idx, text in enumerate(new_texts):
+            _, doc_inputs = compose_input(text, idx, self.tokenizer)
+            length = len(doc_inputs["input_ids"])
+            num_chunks = (length + kernel_sz - 1) // kernel_sz
+            new_documents.append(Document(doc=text, doc_id=idx, num_chunks=num_chunks))
+
+        new_buckets: List[List[Document]] = MSAEngine.balanced_bucket_partition(
+            new_documents, self.generate_config.world
+        )
+        idx_to_doc_full = {doc.doc_id: doc.doc for doc in new_documents}
+
+        # --- 2. 向各 worker 发送 ResetMemoryCmd ---
+        for idx, gpu_id in enumerate(self.generate_config.devices):
+            cmd = ResetMemoryCmd(docs=new_buckets[idx], idx_to_doc=idx_to_doc_full)
+            self.worker_qs[gpu_id].put(cmd, block=False)
+
+        # --- 3. 等待所有 worker 完成 ---
+        collected = 0
+        errors: List[str] = []
+        while collected < len(self.worker_qs):
+            rsp: ResetMemoryResult = self.sync_result_queue.get()
+            assert isinstance(rsp, ResetMemoryResult), f"unexpected response type: {type(rsp)}"
+            if not rsp.ok:
+                errors.append(f"gpu {rsp.gpu_id}: {rsp.error}")
+            collected += 1
+
+        if errors:
+            raise RuntimeError(f"reset_documents failed: {'; '.join(errors)}")
+
+        # --- 4. 更新 MSAEngine 侧状态 ---
+        self.buckets = new_buckets
+        self.docs = list(new_documents)
 
     def __enter__(self):
         return self
