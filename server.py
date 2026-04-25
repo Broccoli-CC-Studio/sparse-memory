@@ -200,6 +200,19 @@ def health():
     }
 
 
+@app.post("/shutdown")
+def shutdown():
+    """Save state and trigger graceful shutdown via SIGTERM. Use to free
+    the GPU or pick up code changes in src/. The server listens on
+    0.0.0.0; deploy behind a firewall if not on a private network."""
+    import os
+    import signal
+    if _state_file and len(store) > 0:
+        store.save(_state_file)
+    os.kill(os.getpid(), signal.SIGTERM)
+    return {"ok": True, "msg": "shutting down"}
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("MSA_PORT", "8377"))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
