@@ -9,6 +9,12 @@ ckpt/
 # KV cache (generated at runtime)
 kv_cache/
 kv_cache_crud/
+kv_cache_test_delete/
+
+# Runtime state (per-deployment, not source)
+memory_state.json
+memory_backup.json
+server.log
 
 # Temp files
 .memory_bank_tmp.json
