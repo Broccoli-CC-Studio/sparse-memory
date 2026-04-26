@@ -99,6 +99,9 @@ curl localhost:8379/add_batch -H "Content-Type: application/json" \
 curl localhost:8379/health          # status + doc count
 curl localhost:8379/list            # all documents
 curl -X DELETE localhost:8379/remove/0  # delete doc
+curl localhost:8379/core            # global context summary
+curl localhost:8379/update_core -H "Content-Type: application/json" \
+  -d '{"text": "Operator: Broccoli on RTX 3090."}'  # set global context prepended to every query
 ```
 
 Auto-saves state to `memory_state.json` on every write. Reloads on startup.
