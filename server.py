@@ -167,6 +167,24 @@ def compact():
     return {"ok": True, "count": len(store)}
 
 
+@app.get("/duplicates")
+def duplicates():
+    """List groups of active doc_ids whose whitespace-normalized text
+    matches. Read-only diagnostic; pair with POST /dedupe to act on it."""
+    groups = store.find_exact_duplicates()
+    return {"groups": groups, "count": sum(len(g) - 1 for g in groups)}
+
+
+@app.post("/dedupe")
+def dedupe():
+    """Remove older copies in each duplicate equivalence class, keeping
+    the newest. Auto-saves state. Triggers reset_documents on next query."""
+    n = store.dedupe_exact()
+    if n:
+        _auto_save()
+    return {"ok": True, "removed": n, "active": len(store)}
+
+
 @app.post("/save")
 def save(req: SaveLoadRequest):
     store.save(req.path)

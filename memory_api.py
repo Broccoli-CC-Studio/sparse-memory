@@ -93,6 +93,32 @@ class MemoryStore:
             if i not in self.deleted_ids
         ]
 
+    def find_exact_duplicates(self) -> list:
+        """Return groups of active doc_ids whose whitespace-normalized text
+        matches, oldest first within each group. Useful before compact() to
+        catch dialogue fragments or note files re-ingested through
+        different paths. Each returned list has length >= 2.
+        """
+        groups = {}
+        for doc_id, text in self.list_docs():
+            normalized = " ".join(text.split())
+            groups.setdefault(normalized, []).append(doc_id)
+        return [sorted(ids) for ids in groups.values() if len(ids) > 1]
+
+    def dedupe_exact(self) -> int:
+        """For every equivalence class of duplicate active docs, keep the
+        newest (highest doc_id) and remove the rest. Returns the number of
+        docs removed. The next query rebuilds via reset_documents (or
+        _build_engine if engine not yet loaded)."""
+        removed = 0
+        for group in self.find_exact_duplicates():
+            for older_id in group[:-1]:
+                if older_id not in self.deleted_ids:
+                    self.deleted_ids.add(older_id)
+                    self._needs_rebuild = True
+                    removed += 1
+        return removed
+
     def _build_engine(self, docs):
         """Full rebuild: start engine with given docs."""
         if self._engine is not None:
