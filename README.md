@@ -34,11 +34,13 @@ Sparse Memory retrieves by **reasoning** — the same Transformer that generates
 
 ## Benchmarks
 
-Two runs, same five cross-document questions:
-
+Single-doc retrieval (5 single-fact questions):
 - 37 docs (current, 12 raw facts + 25 memory files): 5/5 correct, avg 4.4s warm (1-14s range)
 - 78 docs (earlier `real_memory.json`): 5/5 correct
-- Cross-document reasoning verified (connecting facts from different docs)
+
+Two-doc composition (10 harder questions, see `HARD_QA_FINDING.md`):
+- After correcting for keyword-match artifacts (Chinese/English / number formatting): 6 full / 3 partial / 1 confident-negative failure
+- Real failure modes observed: context-bleed (wrong doc neighborhood retrieved), confident-negative (says "I don't know" when answer is retrievable)
 
 | Operation | Latency | Notes |
 |-----------|---------|-------|
