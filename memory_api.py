@@ -48,6 +48,7 @@ class MemoryStore:
         self.doc_top_k = doc_top_k
         self.documents = []
         self.deleted_ids = set()
+        self.core_summary = ""  # global context prepended to every query
         self._pending_adds = []  # texts waiting to be incrementally prefilled
         self._engine = None
         self._needs_rebuild = False  # true after delete — requires full rebuild on next query
@@ -73,6 +74,9 @@ class MemoryStore:
     def update(self, doc_id: int, new_text: str) -> int:
         self.remove(doc_id)
         return self.add(new_text)
+
+    def update_core(self, text: str):
+        self.core_summary = text
 
     def get(self, doc_id: int) -> str:
         if doc_id in self.deleted_ids:
@@ -187,7 +191,12 @@ class MemoryStore:
 
         self._ensure_ready()
 
-        texts, _, _ = self._engine.generate(question, require_recall_topk=True)
+        if self.core_summary:
+            full_question = f"Context: {self.core_summary}\n\nQuestion: {question}"
+        else:
+            full_question = question
+
+        texts, _, _ = self._engine.generate(full_question, require_recall_topk=True)
         answer = texts[0]
 
         marker = "The answer to the question is:"
@@ -204,6 +213,7 @@ class MemoryStore:
         data = {
             "documents": self.documents,
             "deleted_ids": list(self.deleted_ids),
+            "core_summary": self.core_summary,
         }
         with open(path, "w") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -215,6 +225,7 @@ class MemoryStore:
         store = cls(**kwargs)
         store.documents = data["documents"]
         store.deleted_ids = set(data.get("deleted_ids", []))
+        store.core_summary = data.get("core_summary", "")
         return store
 
     def close(self):

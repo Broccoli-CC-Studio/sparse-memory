@@ -14,6 +14,8 @@ Endpoints:
     POST   /update/{id}  {"text": "..."}           → {"new_doc_id": 5}
     GET    /docs                                    → {"docs": [[0, "..."], ...], "count": 3}
     GET    /doc/{id}                                → {"doc_id": 0, "text": "..."}
+    GET    /core                                    → {"core_summary": "..."}
+    POST   /update_core  {"text": "..."}            → {"ok": true, "length": 42}
     POST   /save         {"path": "/tmp/x.json"}   → {"ok": true}
     POST   /load         {"path": "/tmp/x.json"}   → {"ok": true, "count": 5}
     GET    /health                                  → {"status": "ok", "docs": 3, "gpu_mb": 9482}
@@ -51,6 +53,9 @@ class QueryRequest(BaseModel):
 class UpdateRequest(BaseModel):
     text: str
 
+class UpdateCoreRequest(BaseModel):
+    text: str
+
 class SaveLoadRequest(BaseModel):
     path: str
 
@@ -83,6 +88,7 @@ async def lifespan(app: FastAPI):
             data = json.load(f)
         store.documents = data["documents"]
         store.deleted_ids = set(data.get("deleted_ids", []))
+        store.core_summary = data.get("core_summary", "")
         n = len(store)
         print(f"Loaded {n} docs from {state_file}")
 
@@ -160,6 +166,18 @@ def get_doc(doc_id: int):
     except (IndexError, KeyError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"doc_id": doc_id, "text": text}
+
+
+@app.get("/core")
+def get_core():
+    return {"core_summary": store.core_summary}
+
+
+@app.post("/update_core")
+def update_core(req: UpdateCoreRequest):
+    store.update_core(req.text)
+    _auto_save()
+    return {"ok": True, "length": len(req.text)}
 
 
 @app.get("/duplicates")
