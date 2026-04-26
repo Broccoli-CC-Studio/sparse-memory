@@ -15,7 +15,12 @@ class ProtocolConstants:
         k, v = q.get()
         assert k == constant, f"expect {constant} but got {k}"
         return v
-    
+
+    @staticmethod
+    def expect_any(q: mp.Queue):
+        k, v = q.get()
+        return k, v
+
     @staticmethod
     def send(q: mp.Queue, constant, data=None, block=True):
         q.put((constant, data), block=block)

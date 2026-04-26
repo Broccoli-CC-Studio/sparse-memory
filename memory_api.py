@@ -50,7 +50,7 @@ class MemoryStore:
         self.deleted_ids = set()
         self._pending_adds = []  # texts waiting to be incrementally prefilled
         self._engine = None
-        self._needs_rebuild = False  # true after delete/compact — requires full rebuild
+        self._needs_rebuild = False  # true after delete — requires full rebuild on next query
         self._max_generate_tokens = max_generate_tokens
         self._pooling_kernel_size = msa_cfg.get("pooling_kernel_size", 64)
         self._router_layer_idx = msa_cfg.get("router_layer_idx", "all")
@@ -95,9 +95,9 @@ class MemoryStore:
 
     def find_exact_duplicates(self) -> list:
         """Return groups of active doc_ids whose whitespace-normalized text
-        matches, oldest first within each group. Useful before compact() to
-        catch dialogue fragments or note files re-ingested through
-        different paths. Each returned list has length >= 2.
+        matches, oldest first within each group. Pair with dedupe_exact() to
+        drop older copies of dialogue fragments or note files re-ingested
+        through different paths. Each returned list has length >= 2.
         """
         groups = {}
         for doc_id, text in self.list_docs():
@@ -199,13 +199,6 @@ class MemoryStore:
             return parts[-1].strip()
 
         return answer.strip()
-
-    def compact(self):
-        """Remove deleted docs permanently and rebuild."""
-        self.documents = self._active_docs()
-        self.deleted_ids = set()
-        self._pending_adds.clear()
-        self._needs_rebuild = True
 
     def save(self, path: str):
         data = {

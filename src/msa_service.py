@@ -353,22 +353,27 @@ class Memory(GpuWorker):
             self.scaling = self.msa_model_config.head_dim**-0.5
 
     def _start_worker(self):
+        if getattr(self, "_worker_process", None) is not None:
+            return
         self._worker_req_q, self._worker_rsp_q = mp.Queue(), mp.Queue()
 
         self._worker_process = mp.Process(
             target=PrefillStage1Worker.prefill_worker_main,
-            args=(self.gpu_id, self._worker_req_q, self._worker_rsp_q,  
-                  self.model_config.model_path,  self.generate_config.template, 
+            args=(self.gpu_id, self._worker_req_q, self._worker_rsp_q,
+                  self.model_config.model_path,  self.generate_config.template,
                   self.memory_config.pooling_kernel_size, self.memory_config.block_size,
                   self.model_config.get_model_envs()),
-            name=f"PrefillStage1Worker-{self.gpu_id}"
+            name=f"PrefillStage1Worker-{self.gpu_id}",
+            daemon=True,
         )
         self._worker_process.start()
 
         PrefillStage1Worker.wait_for_ready(self._worker_rsp_q)
         print(f"Prefill worker {self.gpu_id} is ready")
-    
+
     def _stop_worker(self):
+        if getattr(self, "_worker_process", None) is None:
+            return
         print(f"Stop prefill worker on GPU {self.gpu_id}")
         PrefillStage1Worker.close_worker(self._worker_req_q)
         self._worker_process.join()
@@ -615,7 +620,8 @@ class Memory(GpuWorker):
             past_key_values.clear_kvcache()
 
         pbar.close()
-        self._stop_worker()
+        # persistent worker: signal end-of-batch, leave alive for reuse (daemon=True ensures auto-kill on parent exit)
+        PrefillStage1Worker.recv_batch_done(self._worker_rsp_q)
 
         # 合并临时pooled doc id
         self.block_desc.merge_poolig_doc_id(self.device)

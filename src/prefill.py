@@ -33,6 +33,7 @@ PREFILL_WORKER_CLOSE = "PREFILL_WORKER_CLOSE"
 PREFILL_WORKER_MEMORY_DOCS = "PREFILL_WORKER_MEMORY_DOCS"
 PREFILL_WORKER_NUM_CHUNKS_REPORT = "PREFILL_WORKER_NUM_CHUNKS_REPORT"
 PREFILL_WORKER_META = "PREFILL_WORKER_META"
+PREFILL_WORKER_BATCH_DONE = "PREFILL_WORKER_BATCH_DONE"
 
 class PrefillStage1Worker(GpuWorker):
     """Memory工作进程"""
@@ -109,34 +110,39 @@ class PrefillStage1Worker(GpuWorker):
         return ProtocolConstants.expect(q, PREFILL_WORKER_META)
 
     @staticmethod
+    def recv_batch_done(q: mp.Queue):
+        return ProtocolConstants.expect(q, PREFILL_WORKER_BATCH_DONE)
+
+    @staticmethod
     def prefill_worker_main(gpu_id: int, request_queue: mp.Queue, response_queue: mp.Queue,
                             model_path: str, template: Dict,
                             pooling_kernel_size: int, block_size: int, envs):
-        
-        # print(f"prefill worker {gpu_id} started")
+
         worker = PrefillStage1Worker(gpu_id, model_path, template, pooling_kernel_size, envs)
 
-        # notify parent I'm ready
         ProtocolConstants.send(response_queue, PREFILL_WORKER_READY, block=False)
 
-        docs: List[Document] = ProtocolConstants.expect(request_queue, PREFILL_WORKER_MEMORY_DOCS)
-        try:
-            for block in PrefillStage1Worker.split_docs(docs, block_size):
-                meta = worker.inference(block)
+        while True:
+            tag, data = ProtocolConstants.expect_any(request_queue)
+            if tag == PREFILL_WORKER_CLOSE:
+                break
+            if tag != PREFILL_WORKER_MEMORY_DOCS:
+                print(f"[prefill worker {gpu_id}] unexpected tag {tag}, ignoring")
+                continue
+            docs: List[Document] = data
+            try:
+                for block in PrefillStage1Worker.split_docs(docs, block_size):
+                    meta = worker.inference(block)
+                    ProtocolConstants.send(response_queue,
+                                        PREFILL_WORKER_META,
+                                        data=meta,
+                                        block=False)
+            except Exception as e:
+                print(f"[prefill worker {gpu_id}] batch error: {e}")
+                import traceback
+                traceback.print_exc()
+            ProtocolConstants.send(response_queue, PREFILL_WORKER_BATCH_DONE, block=False)
 
-                # send to master worker process and continue, DO NOT block
-                ProtocolConstants.send(response_queue, 
-                                    PREFILL_WORKER_META,
-                                    data=meta,
-                                    block=False)
-
-        except Exception as e:
-            print(f"[子进程 {gpu_id}] 发生错误: {e}")
-            import traceback
-            traceback.print_exc()
-        
-        # wait for exit signal
-        ProtocolConstants.expect(request_queue, PREFILL_WORKER_CLOSE)
         print(f"prefill worker {gpu_id} ended")
 
     def inference(self, block: List[Document]):

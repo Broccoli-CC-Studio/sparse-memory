@@ -84,7 +84,7 @@ Forwarded to workers via a new `SetDeletedIdsCmd`.
 
 ### Cons
 
-- KV cache for deleted docs still occupies GPU memory and SSD mmap. Capacity slowly degrades until compaction.
+- KV cache for deleted docs would still occupy GPU memory and SSD mmap until rebuild. Capacity would slowly degrade between rebuilds.
 - Top-k may include deleted docs that get masked. Effective top-k drops. With heavy deletion the model gets fewer real options.
 - Routing decisions are still influenced by deleted docs during the routing pass before the mask. The pooled keys may still affect selection through normalization.
 
@@ -94,7 +94,7 @@ If users need fast delete more than they need clean memory accounting. Likely th
 
 ## Recommendation
 
-Ship A first. It is the correct fix and the existing `compact()` API already implies this semantics (clean memory after delete). B can layer on top later as an optimization knob (`MemoryStore(eager_compact=False)`) for users who do bulk deletes.
+Ship A first. It is the correct fix: delete sets a tombstone, the next query rebuilds over active docs. The previous compact() API became redundant once this path landed and was removed 2026-04-27. B can layer on top later as an optimization knob for users who do bulk deletes.
 
 ## Implementation order
 
@@ -148,6 +148,67 @@ The optimization is still worth shipping (cuts ~10s off every delete), but the "
 To get further speedup, a follow-up needs to keep `PrefillStage1Worker` alive between resets (single persistent prefill subprocess). At ~4.5s saved per reset, that is ~7s total versus 17.5s baseline, or ~2.5x. Still not 35x.
 
 To verify the current fix end-to-end, test_delete_no_reload.py needs a clean GPU (no concurrent running server).
+
+## End-to-end verification (2026-04-26 17:24)
+
+Yilan terminated the running server from outside the container, freeing GPU. Reran `test_delete_no_reload.py` with a clean MemoryStore + 5 docs:
+
+- cold first query: 9.87s (model load + prefill of 5 docs)
+- warm query (no change): 1.01s
+- remove doc 4: 0.000s
+- **post-delete query: 5.45s**
+- warm query after delete: 2.47s
+
+Verdict: PASS. Post-delete latency 5.45s, well under the <10s target and faster than the ~8s prediction. GPU memory before run: 97 MB. After run: 97 MB. Cleanup is clean.
+
+The 5.45s figure is on 5 docs, not 37. The 17.5s OLD baseline was measured on 37 docs.
+
+## 37-doc apples-to-apples (2026-04-26 17:46)
+
+Started fresh server with current commit (`bash start_server.sh` via `Bash(run_in_background=true)`), loaded the 37-doc memory_state.json, and ran a NEW-path measurement matching the 09:30 OLD-path bench.
+
+- cold first query: 12.65s (engine load + prefill of 37 docs)
+- warm query: 1.25s
+- DELETE /remove/54: 0.001s
+- **post-delete query: 8.15s** (OLD baseline 17.51s on the same 37-doc dataset)
+- warm query after delete: 1.25s
+
+NEW vs OLD speedup: 17.51 / 8.15 = 2.15x. This matches the prediction in the empirical-correction section: "Predicted NEW: ~8s, roughly 2x speedup."
+
+Closing the lifecycle: POST /shutdown → `{"ok":true,"msg":"shutting down"}` → lifespan handler saved 36 docs (54 removed) at 17:46:35 → SIGTERM → process exit 0. The /shutdown endpoint added in 9a6e68a is now verified end-to-end.
+
+For further gain, a persistent PrefillStage1Worker would skip the ~4.5s checkpoint reload on each reset (designed in `PERSISTENT_PREFILL_WORKER.md`), bringing post-delete to ~3-4s.
+
+## Persistent prefill worker (2026-04-26 19:00)
+
+Implemented per `PERSISTENT_PREFILL_WORKER.md`. The prefill subprocess now stays alive across resets and dispatches on `MEMORY_DOCS` / `CLOSE` tags, sending a `BATCH_DONE` after each batch. `_start_worker` and `_stop_worker` are idempotent. The `mp.Process` for the worker is constructed with `daemon=True`, so it auto-dies when the parent process exits.
+
+Verified against a 35-doc state file:
+
+- cold first query: 14.77s
+- warm query: 4.15s
+- DELETE /remove/52: 0.002s
+- post-delete query: 7.77s
+- warm query after delete: 5.79s
+- /shutdown lifecycle: GPU back to 94 MB, no orphan compute apps
+
+`server.log` shows one `Prefill worker 0 is ready` line and two `Worker-0 memory inference` rounds (35/35 cold and 34/34 post-delete) without any `Stop prefill worker` between them — the worker persisted as designed.
+
+Post-delete wall-clock is dominated by answer generation length (this run produced multi-line bullet answers, prior runs produced one-sentence answers). The architectural saving from skipping subprocess spawn (~4.5s) shows up as `Prefill worker 0 is ready` appearing once instead of twice in `server.log`, not as a clean wall-clock delta. Comparing across runs requires controlling `max_generate_tokens`.
+
+## Controlled-token measurement (2026-04-26 19:29)
+
+Added `MSA_MAX_GEN_TOKENS` env var to `server.py` and reran with `MSA_MAX_GEN_TOKENS=32`. The 34-doc state file was used (further deletions accumulated across iterations).
+
+- cold first query: 11.40s
+- warm query: 0.73s
+- DELETE /remove/51: 0.001s
+- **post-delete query: 2.64s**
+- warm query after delete: 0.79s
+
+With token output constrained, the architectural saving lands clearly: post-delete is 2.64s on 34 docs versus the 17.51s OLD baseline on 37 docs, a 6.6x speedup. The post-delete cost decomposes roughly as ~2s prefill of the remaining 33 docs + ~0.3s generation of 32 tokens + ~0.3s overhead; the persistent worker keeps the ~4.5s subprocess spawn out of the path.
+
+The default 512-token generation case sees post-delete 7-8s where generation dominates and the persistent saving is masked. Users who care about reset latency should constrain `MSA_MAX_GEN_TOKENS` for their workload.
 
 ## Out of scope this design
 

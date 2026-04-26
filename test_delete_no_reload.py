@@ -76,12 +76,13 @@ def main():
     print("\n=== Summary ===")
     print(f"  cold first query:        {cold_dt:7.2f}s")
     print(f"  warm query (no change):  {warm_dt:7.2f}s")
-    print(f"  post-delete query:       {delete_query_dt:7.2f}s  (pre-fix baseline ~70s, target <10s)")
+    print(f"  post-delete query:       {delete_query_dt:7.2f}s  (pre-fix baseline 17.5s on 37 docs, target <10s)")
     print(f"  warm query after delete: {final_warm_dt:7.2f}s")
 
     assert delete_query_dt < 30.0, (
         f"post-delete query took {delete_query_dt:.2f}s, expected <30s. "
-        "Pre-fix baseline was ~70s; if regressed, check reset_documents path."
+        "Pre-fix baseline measured 17.5s on 37 docs (bench_old_rebuild.py 2026-04-26 09:30); "
+        "if regressed, check reset_documents path."
     )
 
     if delete_query_dt < 5.0:

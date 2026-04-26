@@ -14,7 +14,6 @@ Endpoints:
     POST   /update/{id}  {"text": "..."}           → {"new_doc_id": 5}
     GET    /docs                                    → {"docs": [[0, "..."], ...], "count": 3}
     GET    /doc/{id}                                → {"doc_id": 0, "text": "..."}
-    POST   /compact                                 → {"ok": true, "count": 3}
     POST   /save         {"path": "/tmp/x.json"}   → {"ok": true}
     POST   /load         {"path": "/tmp/x.json"}   → {"ok": true, "count": 5}
     GET    /health                                  → {"status": "ok", "docs": 3, "gpu_mb": 9482}
@@ -67,11 +66,13 @@ async def lifespan(app: FastAPI):
     model_path = os.environ.get("MSA_MODEL_PATH", "ckpt/MSA-4B")
     kv_cache_dir = os.environ.get("MSA_KV_CACHE_DIR", "kv_cache")
     doc_top_k = int(os.environ.get("MSA_DOC_TOP_K", "10"))
+    max_gen_tokens = int(os.environ.get("MSA_MAX_GEN_TOKENS", "512"))
 
     store = MemoryStore(
         model_path=model_path,
         kv_cache_dir=kv_cache_dir,
         doc_top_k=doc_top_k,
+        max_generate_tokens=max_gen_tokens,
     )
 
     # auto-load persisted state if exists
@@ -159,12 +160,6 @@ def get_doc(doc_id: int):
     except (IndexError, KeyError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"doc_id": doc_id, "text": text}
-
-
-@app.post("/compact")
-def compact():
-    store.compact()
-    return {"ok": True, "count": len(store)}
 
 
 @app.get("/duplicates")

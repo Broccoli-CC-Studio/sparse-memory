@@ -25,7 +25,7 @@ Runs on a single RTX 3090. ~8GB VRAM for model + routing keys. Wrapper is around
 
 Honest limits:
 - First query is ~80s (model load + prefill). Warm queries: short answer ~1s, long answer with code ~14s, latency tracks generated tokens not retrieval.
-- Delete forces a ~17s rebuild because the engine reloads the checkpoint. Optimization in progress (skip MSAService re-load) cuts that to ~8s; full speedup needs persistent prefill worker.
+- Delete used to force a ~17s rebuild because the engine reloaded the checkpoint. The current path (skip MSAService re-load on reset) lands at 8.15s on 37 docs end-to-end (verified). A persistent prefill worker would bring this closer to 3-4s.
 - Single-doc retrieval: ~100% on small benchmarks (5/5 on 37 docs, 5/5 on earlier 78 docs).
 - Two-doc composition: 50-70% on a 10-question harder probe; failure modes are context-bleed (wrong doc neighborhood retrieved) and confident-negative (says "I don't know" when answer was retrievable). Detail in HARD_QA_FINDING.md.
 - QA-mode hallucinates when the bank lacks the answer (verified: "What is MSA?" returned a confident wrong definition because no doc defines the acronym). Out-of-distribution questions need filtering at the application layer.

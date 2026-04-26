@@ -61,7 +61,7 @@ On 78 real-world memory documents (agent notes, API docs, experiment logs):
 - **CRUD**: `add()`, `remove()`, `update()`, `query()`, `get()`
 - **Persistence**: `save()` / `load()` to JSON
 - **SSD offload**: Set `MSA_KV_CACHE_DIR` to enable mmap-backed KV cache
-- **Lazy delete**: O(1) delete with periodic compaction
+- **Lazy delete**: O(1) delete; KV cache rebuilds over active docs on next query
 - **Dynamic top-k**: `top_k = log(n)` scales with memory size
 
 ## Quick Start
