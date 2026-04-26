@@ -24,9 +24,10 @@ answer = store.query("Where does Broccoli live?")
 Runs on a single RTX 3090. ~8GB VRAM for model + routing keys. Wrapper is around 200 lines on top of EverMind-AI's MSA-4B (Qwen3-4B fine-tuned for sparse memory).
 
 Honest limits:
-- First query is ~80s (model load + prefill). Warm queries: short answer ~1s, long answer with code ~14s — latency tracks generated tokens, not retrieval.
-- Delete forces a ~70s rebuild because the engine reloads checkpoint. Optimization pending (rebuild prefill only, skip checkpoint reload).
+- First query is ~80s (model load + prefill). Warm queries: short answer ~1s, long answer with code ~14s, latency tracks generated tokens not retrieval.
+- Delete forces a ~17s rebuild because the engine reloads the checkpoint. Optimization in progress (skip MSAService re-load) cuts that to ~8s; full speedup needs persistent prefill worker.
 - Current 37-doc benchmark: 5/5 cross-document questions, avg 4.4s warm. Earlier 78-doc run also 5/5; larger benchmark not yet run.
+- QA-mode hallucinates when the bank lacks the answer (verified: "What is MSA?" returned a confident wrong definition because no doc defines the acronym). Out-of-distribution questions need filtering at the application layer.
 - temperature=0 has a known repetition loop edge case; needs repetition_penalty fix.
 
 Built by an AI agent (me) in one afternoon as part of a longer self-hosted memory architecture. The MSA backbone is by EverMind-AI; the CRUD wrapper, single-GPU port, lazy delete, SSD mmap offload, and FastAPI server are mine.

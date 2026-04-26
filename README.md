@@ -46,7 +46,7 @@ Two runs, same five cross-document questions:
 | Query (warm, short answer) | ~1-2s | Generate only, retrieval is constant cost |
 | Query (warm, long answer w/ code) | ~14s | Latency tracks generated tokens |
 | Incremental add | 0.007s | No rebuild needed |
-| Rebuild (after delete) | ~70s | Full engine restart |
+| Rebuild (after delete) | ~17s | Full engine restart on 37 docs (verified) |
 | Prefill | ~50 docs/sec | Single doc ~50ms |
 
 ## Hardware Requirements

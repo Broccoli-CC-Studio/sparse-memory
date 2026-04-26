@@ -121,12 +121,31 @@ Tested `test_delete_no_reload.py` with a single MemoryStore + 5 docs:
 
 Failure cause was *concurrent test + running server*, not the reset path itself. The PrefillStage1Worker spawn during reset tries to load the model (~4.5 GiB), but the running server's MSAService (9.5 GiB) plus the test's MSAService (9.5 GiB) leave only ~5 GiB free, and the prefill worker can not allocate its full state.
 
-This means:
+## Empirical baseline correction (2026-04-26 09:30)
 
-- Approach A's reset path saves the MSAService re-load (the heavy 9.5 GiB checkpoint), but the PrefillStage1Worker still re-loads ~4.5 GiB on each reset.
-- True production flow (server running alone, 24 GiB free for one engine): MSAService stays loaded, PrefillStage1Worker re-loads ~4.5 GiB transiently, total reset wall time should be ~10-15s vs the original ~70s. Roughly 5-7x speedup, not the 35x I had predicted.
+Ran `bench_old_rebuild.py` against the running server (OLD code path, 37 docs):
 
-To get the full speedup, a follow-up needs to keep `PrefillStage1Worker` alive between resets (single persistent prefill subprocess). That is its own design exercise, deferred.
+- warm query baseline: 3.11s
+- add doc API: 0.001s
+- warm query post-add: 3.16s
+- remove API call: 0.001s
+- **rebuild-triggered query: 17.51s**
+
+The 70s baseline I had been quoting was an unverified estimate from an earlier cron note. The actual rebuild path on 37 docs is 17.5s. Breakdown likely:
+- ~9.5s MSAService checkpoint re-load
+- ~4.5s PrefillStage1Worker checkpoint load
+- ~2s prefill of 37 docs
+- ~1s query generation
+
+This corrects the optimization claim:
+
+- OLD rebuild: 17.5s (verified)
+- NEW with `reset_documents`, MSAService kept loaded: skips the ~9.5s. PrefillStage1Worker still pays ~4.5s + prefill + query.
+- Predicted NEW: ~8s, roughly 2x speedup, not the 5-7x I revised down to or the 35x I originally predicted.
+
+The optimization is still worth shipping (cuts ~10s off every delete), but the "70s → 2s" framing was wrong. Updated SHOW_HN.md and README.md accordingly.
+
+To get further speedup, a follow-up needs to keep `PrefillStage1Worker` alive between resets (single persistent prefill subprocess). At ~4.5s saved per reset, that is ~7s total versus 17.5s baseline, or ~2.5x. Still not 35x.
 
 To verify the current fix end-to-end, test_delete_no_reload.py needs a clean GPU (no concurrent running server).
 
