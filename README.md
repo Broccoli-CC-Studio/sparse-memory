@@ -71,7 +71,7 @@ Two-doc composition (10 harder questions, see `HARD_QA_FINDING.md`):
 - **CRUD**: `add()`, `remove()`, `update()`, `query()`, `get()`
 - **Persistence**: `save()` / `load()` to JSON
 - **SSD offload**: Set `MSA_KV_CACHE_DIR` to enable mmap-backed KV cache
-- **FP8 V cache**: Set `MSA_V_DTYPE=fp8` to halve V cache size (2x more capacity per GB). K stays BF16 since routing reads K. 5/5 CRUD parity + 3/3 byte-identical answers vs BF16 on test_crud.
+- **FP8 V cache**: Set `MSA_V_DTYPE=fp8` to halve V cache size (exact 2.000x). K stays BF16 since routing reads K. 13-doc benchmark: 11/13 byte-identical + 2/13 paraphrase + 0/13 factual divergence vs BF16. Latency overhead within noise (1.30s vs 1.32s mean warm).
 - **Lazy delete**: O(1) delete; KV cache rebuilds over active docs on next query
 - **Dynamic top-k**: `top_k = log(n)` scales with memory size
 
