@@ -11,7 +11,10 @@ kv_cache/
 kv_cache_crud/
 kv_cache_crud_fp8/
 kv_cache_multi_bf16/
+kv_cache_multi_bf16_v2/
 kv_cache_multi_fp8/
+kv_cache_multi_kfp8/
+kv_cache_multi_kvfp8/
 kv_cache_test_delete/
 
 # Test logs
@@ -21,8 +24,12 @@ fp8.log
 baseline.log
 multi_bf16.log
 multi_fp8.log
+multi_kfp8.log
+multi_kvfp8.log
 results_bf16.json
 results_fp8.json
+results_kfp8.json
+results_kvfp8.json
 
 # Runtime state (per-deployment, not source)
 memory_state.json

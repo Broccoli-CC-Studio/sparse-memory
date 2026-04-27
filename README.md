@@ -71,7 +71,8 @@ Two-doc composition (10 harder questions, see `HARD_QA_FINDING.md`):
 - **CRUD**: `add()`, `remove()`, `update()`, `query()`, `get()`
 - **Persistence**: `save()` / `load()` to JSON
 - **SSD offload**: Set `MSA_KV_CACHE_DIR` to enable mmap-backed KV cache
-- **FP8 V cache**: Set `MSA_V_DTYPE=fp8` to halve V cache size (exact 2.000x). K stays BF16 since routing reads K. 13-doc benchmark: 11/13 byte-identical + 2/13 paraphrase + 0/13 factual divergence vs BF16. Latency overhead within noise (1.30s vs 1.32s mean warm).
+- **FP8 V cache**: Set `MSA_V_DTYPE=fp8` to halve V cache size (exact 2.000x). 13-doc benchmark: 11/13 byte-identical + 2/13 paraphrase + 0/13 factual divergence. Latency within noise.
+- **FP8 K cache**: Set `MSA_K_DTYPE=fp8` to halve attention K cache (only when `decouple_router=true`, which MSA-4B has). Routing uses the dedicated rk tensor and is unaffected. Stacks with V FP8 — combined K+V FP8 gives full attention KV cache at half BF16 size, with 9/13 byte-identical + 2/13 paraphrase + 2/13 briefer-but-correct on the 13-query benchmark.
 - **Lazy delete**: O(1) delete; KV cache rebuilds over active docs on next query
 - **Dynamic top-k**: `top_k = log(n)` scales with memory size
 

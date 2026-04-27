@@ -40,6 +40,18 @@ def _resolve_v_dtype(k_dtype: torch.dtype) -> torch.dtype:
         return torch.float8_e4m3fn
     return k_dtype
 
+
+def _resolve_k_dtype(default_dtype: torch.dtype, has_rk: bool) -> torch.dtype:
+    """K-cache dtype, controlled by MSA_K_DTYPE env var. Only honors 'fp8'
+    when decouple_router is on (has_rk=True), so routing reads the dedicated
+    rk tensor and is unaffected. Falls back to default_dtype otherwise.
+    Stacks with MSA_V_DTYPE: each halves independently, so K+V FP8 takes the
+    full attention KV-cache (K+V) to half its BF16 size."""
+    k = os.environ.get("MSA_K_DTYPE", "").lower()
+    if k in ("fp8", "float8", "float8_e4m3fn") and has_rk:
+        return torch.float8_e4m3fn
+    return default_dtype
+
 @dataclass
 class CmdBase:
     name: str = ""
@@ -528,6 +540,7 @@ class Memory(GpuWorker):
     def _init_block_data(self, shape: torch.Size, dtype: torch.dtype, has_rk=False):
         total_chunks = self.block_desc.chunks()
         v_dtype = _resolve_v_dtype(dtype)
+        k_dtype = _resolve_k_dtype(dtype, has_rk)
         for layer_idx in self.router_layer_ids:
             block_data = self.blocks[layer_idx]
 
@@ -535,7 +548,7 @@ class Memory(GpuWorker):
                 kv_shape = list(shape)
                 kv_shape[2] = total_chunks
                 # TODO: deserialize 时需要考虑 pin_memory
-                block_data.k = torch.empty(kv_shape, device=self.v_device if has_rk else self.device, dtype=dtype, pin_memory=has_rk)
+                block_data.k = torch.empty(kv_shape, device=self.v_device if has_rk else self.device, dtype=k_dtype, pin_memory=has_rk)
                 # SSD mmap offload: V cache backed by disk file, OS manages hot/cold pages
                 _mmap_dir = os.environ.get("MSA_KV_CACHE_DIR", "")
                 if _mmap_dir:
@@ -626,7 +639,7 @@ class Memory(GpuWorker):
                     assert kv_offset + meta_chunks <= total_chunks, f"overflow: offset {kv_offset}, meta_chunks {meta_chunks}, total_chunks {total_chunks}"
 
                 # print(f"shape {k.shape} offset {kv_offset}")
-                k_cache[:, :, kv_offset:kv_offset+meta_chunks] = k.to(k_cache.device)
+                k_cache[:, :, kv_offset:kv_offset+meta_chunks] = k.to(k_cache.device).to(k_cache.dtype)
                 v_cache[:, :, kv_offset:kv_offset+meta_chunks] = v.to(v_cache.device).to(v_cache.dtype)
                 if rk is not None:
                     rk_cache[:, :, kv_offset:kv_offset+meta_chunks] = rk.to(rk_cache.device)
@@ -843,7 +856,7 @@ class Memory(GpuWorker):
             new_v = torch.cat(new_kv_v_per_layer[layer_idx], dim=2)
 
             # 追加到现有 tensors（dim=2 是 chunk 维度）
-            block_data.k = torch.cat([block_data.k, new_k.to(block_data.k.device)], dim=2)
+            block_data.k = torch.cat([block_data.k, new_k.to(block_data.k.device).to(block_data.k.dtype)], dim=2)
             block_data.v = torch.cat([block_data.v, new_v.to(block_data.v.device).to(block_data.v.dtype)], dim=2)
 
             if block_data.rk is not None and new_kv_rk_per_layer[layer_idx]:
