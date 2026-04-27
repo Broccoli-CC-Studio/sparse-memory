@@ -30,6 +30,16 @@ MEMORY_WORKER_BLOCKS = "MEMORY_WORKER_BLOCKS"
 MEMORY_WORKER_IDX_TO_DOC = "MEMORY_WORKER_IDX_TO_DOC"
 MEMORY_WORKER_REPORT_KV_STATES = "MEMORY_WORKER_REPORT_KV_STATES"
 
+
+def _resolve_v_dtype(k_dtype: torch.dtype) -> torch.dtype:
+    """V-cache dtype, controlled by MSA_V_DTYPE env var. Default mirrors K
+    dtype (BF16 typically). 'fp8' switches V to float8_e4m3fn for ~2x cache
+    halving (DSV4 borrow). K stays at k_dtype since routing reads K directly."""
+    v = os.environ.get("MSA_V_DTYPE", "").lower()
+    if v in ("fp8", "float8", "float8_e4m3fn"):
+        return torch.float8_e4m3fn
+    return k_dtype
+
 @dataclass
 class CmdBase:
     name: str = ""
@@ -517,6 +527,7 @@ class Memory(GpuWorker):
     
     def _init_block_data(self, shape: torch.Size, dtype: torch.dtype, has_rk=False):
         total_chunks = self.block_desc.chunks()
+        v_dtype = _resolve_v_dtype(dtype)
         for layer_idx in self.router_layer_ids:
             block_data = self.blocks[layer_idx]
 
@@ -529,15 +540,21 @@ class Memory(GpuWorker):
                 _mmap_dir = os.environ.get("MSA_KV_CACHE_DIR", "")
                 if _mmap_dir:
                     os.makedirs(_mmap_dir, exist_ok=True)
-                    _np_dtype = 'float16' if dtype == torch.float16 else 'bfloat16' if dtype == torch.bfloat16 else 'float32'
-                    # numpy doesn't support bfloat16 natively, use uint16 view
-                    _store_dtype = np.uint16 if _np_dtype == 'bfloat16' else np.float16 if _np_dtype == 'float16' else np.float32
+                    # numpy lacks bf16/fp8; pick byte-equivalent storage and view back as torch dtype
+                    if v_dtype == torch.float8_e4m3fn:
+                        _store_dtype = np.uint8
+                    elif v_dtype == torch.bfloat16:
+                        _store_dtype = np.uint16
+                    elif v_dtype == torch.float16:
+                        _store_dtype = np.float16
+                    else:
+                        _store_dtype = np.float32
                     _mmap_path = os.path.join(_mmap_dir, f"block_{id(block_data)}_layer_{layer_idx}_v.bin")
                     _mmap = np.memmap(_mmap_path, dtype=_store_dtype, mode='w+', shape=tuple(kv_shape))
-                    block_data.v = torch.from_numpy(_mmap).view(dtype)
+                    block_data.v = torch.from_numpy(_mmap).view(v_dtype)
                     block_data._v_mmap_path = _mmap_path
                 else:
-                    block_data.v = torch.empty(kv_shape, device=self.v_device, dtype=dtype, pin_memory=True)
+                    block_data.v = torch.empty(kv_shape, device=self.v_device, dtype=v_dtype, pin_memory=True)
                 block_data.rk = torch.empty(kv_shape, device=self.device, dtype=dtype) if has_rk else None
 
     def save_idx_to_doc(self, idx_to_doc: Dict[int, str]):
@@ -610,7 +627,7 @@ class Memory(GpuWorker):
 
                 # print(f"shape {k.shape} offset {kv_offset}")
                 k_cache[:, :, kv_offset:kv_offset+meta_chunks] = k.to(k_cache.device)
-                v_cache[:, :, kv_offset:kv_offset+meta_chunks] = v.to(v_cache.device)
+                v_cache[:, :, kv_offset:kv_offset+meta_chunks] = v.to(v_cache.device).to(v_cache.dtype)
                 if rk is not None:
                     rk_cache[:, :, kv_offset:kv_offset+meta_chunks] = rk.to(rk_cache.device)
 
@@ -827,7 +844,7 @@ class Memory(GpuWorker):
 
             # 追加到现有 tensors（dim=2 是 chunk 维度）
             block_data.k = torch.cat([block_data.k, new_k.to(block_data.k.device)], dim=2)
-            block_data.v = torch.cat([block_data.v, new_v.to(block_data.v.device)], dim=2)
+            block_data.v = torch.cat([block_data.v, new_v.to(block_data.v.device).to(block_data.v.dtype)], dim=2)
 
             if block_data.rk is not None and new_kv_rk_per_layer[layer_idx]:
                 new_rk = torch.cat(new_kv_rk_per_layer[layer_idx], dim=2)
